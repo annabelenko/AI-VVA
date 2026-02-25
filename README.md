@@ -1,6 +1,9 @@
 # 🪖 VVA Veteran Archive Explorer (1999)
 A RAG-based search tool for the 1999 VVA Archives, powered by **Gemma 3** and LangChain.
 
+## 📸 Demo
+<img src="demo.png" alt="Demo">
+
 ## 🚀 Setup & Running
 1. **Activate Environment:** `source .venv/bin/activate`
 2. **Run the App:** `streamlit run app.py`
@@ -16,5 +19,3 @@ Ensure you have pulled these via Ollama:
 * `ollama pull gemma3:12b`
 * `ollama pull gemma3:27b`
 * `ollama pull nomic-embed-text`
-## 📸 Demo
-![Demo](demo.png)
