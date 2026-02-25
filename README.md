@@ -2,7 +2,7 @@
 A RAG-based search tool for the 1999 VVA Archives, powered by **Gemma 3** and LangChain.
 
 ## 📸 Demo
-<img src="demo.png" alt="Demo">
+<img src="demo.PNG" alt="Demo">
 
 ## 🚀 Setup & Running
 1. **Activate Environment:** `source .venv/bin/activate`
