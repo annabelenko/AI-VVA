@@ -12,6 +12,9 @@ A RAG-based search tool for the 1999 VVA Archives, powered by **Gemma 3** and La
 ## 🤖 Required Models
 Ensure you have pulled these via Ollama:
 * `ollama pull gemma3:1b`
+* `ollama pull gemma3:4b`
 * `ollama pull gemma3:12b`
 * `ollama pull gemma3:27b`
 * `ollama pull nomic-embed-text`
+## 📸 Demo
+![Demo](demo.png)
