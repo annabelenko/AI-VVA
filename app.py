@@ -15,11 +15,11 @@ st.markdown("""
     <style>
     .main { background-color: #f8fafc; }
     .stTextInput > div > div > input { border-radius: 0.5rem; border: 2px solid #e2e8f0; }
-    .stats-card { background-color: #000000; padding: 1rem; border-radius: 0.75rem; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1); margin-bottom: 1rem; }
+    .stats-card { background-color: #000000; padding: 1rem; border-radius: 0.75rem; border: 1px solid #e2e8f0; box-s>
     </style>
     """, unsafe_allow_html=True)
 
-# 2. Sidebar for Hardware & AI Stats
+# 2. Sidebar for AI Stats
 with st.sidebar:
     st.title("AI Token Stats")
     stats_placeholder = st.empty()
@@ -41,8 +41,19 @@ with st.sidebar:
        min_value=1, max_value=20, value=7,
        help="How many chunks of the archive should the AI read before answering?"
     )
+    #Context Size Slider
+    ctx_val = st.slider("AI Memory Limit (Context)", 2048, 32768, 8192, step=2048)
 
     st.divider()
+
+    avg_tokens_per_chunk = 500
+    required_ctx = k_val * avg_tokens_per_chunk
+
+    if ctx_val < required_ctx:
+        st.warning(f"Your limit ({ctx_val}) is < than data size ({required_ctx} tokens). AI might 'forget' the oldest chunks!")
+    else:
+        st.success(f"✅ **Memory Optimized:** Your context window is large enough for all {k_val} chunks.")
+
     if st.button("Clear App Cache"):
        st.cache_resource.clear()
        st.success("Cache cleared!")
@@ -50,12 +61,16 @@ with st.sidebar:
 # 3. Backend Logic (Cached to avoid reloading the 12B model constantly)
 @st.cache_resource
 
-def initialize_rag(model_name, k):
+def initialize_rag(model_name, k, ctx):
     embeddings = OllamaEmbeddings(model="nomic-embed-text")
     vectorstore = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
     retriever = vectorstore.as_retriever(search_kwargs={"k": k})
-    llm = ChatOllama(model=model_name)
-    
+    llm = ChatOllama(
+        model=model_name,
+        num_ctx=ctx,
+        temperature=0
+    )
+
     # Simplified RAG template
     template = """
     Answer the question below using only this information:
@@ -64,7 +79,7 @@ def initialize_rag(model_name, k):
     Question: {question}
     Answer:"""
     prompt = ChatPromptTemplate.from_template(template)
-    
+
     # This chain handles retrieval and generation
     chain = (
         {"context": retriever, "question": RunnablePassthrough()}
@@ -74,9 +89,9 @@ def initialize_rag(model_name, k):
     )
     return chain
 
-rag_chain = initialize_rag(selected_model, k_val)
-
 # 4. The User Interface
+rag_chain = initialize_rag(selected_model, k_val, ctx_val)
+
 st.title("🪖 VVA Veteran Archive Explorer")
 st.write("Currently powered by **{selected_model}** reading **{k_val} chunks** per query.")
 
@@ -87,7 +102,7 @@ if query:
         # Wrap the execution in the callback to capture 'Stats'
         with get_openai_callback() as cb:
             response = rag_chain.invoke(query)
-            
+
             # Update the sidebar stats
             with stats_placeholder.container():
                 st.write(f"**Total Tokens:** {cb.total_tokens}")
