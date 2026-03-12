@@ -1,119 +1,115 @@
-import streamlit as st
 import os
-import psutil
+from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
-from langchain_ollama import OllamaEmbeddings, ChatOllama
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.output_parsers import StrOutputParser
-from langchain_community.callbacks import get_openai_callback
+from langchain_ollama import OllamaEmbeddings
 
-# 1. Page Configuration & Tailwind-style Styling
-st.set_page_config(page_title="VVA Archive Explorer", layout="wide")
+from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.datamodel.pipeline_options import PdfPipelineOptions
 
-st.markdown("""
-    <style>
-    .main { background-color: #f8fafc; }
-    .stTextInput > div > div > input { border-radius: 0.5rem; border: 2px solid #e2e8f0; }
-    .stats-card { background-color: #000000; padding: 1rem; border-radius: 0.75rem; border: 1px solid #e2e8f0; box-s>
-    </style>
-    """, unsafe_allow_html=True)
+DATA_PATH = "./data"
+CHROMA_PATH = "./chroma_db"
 
-# 2. Sidebar for AI Stats
-with st.sidebar:
-    st.title("AI Token Stats")
-    stats_placeholder = st.empty()
-    st.divider()
+pipeline_options = PdfPipelineOptions()
+pipeline_options.do_table_structure = True
+pipeline_options.do_ocr = True
 
-    st.title("AI Control Panel")
-    #Model Selection - From 270M to 27b
+def process_with_docling(file_path):
 
-    selected_model = st.selectbox(
-       "Choose AI Brain",
-       ["gemma3:270m", "gemma3:1b","gemma3:4b", "gemma3:12b", "gemma3:27b"],
-       index=1, #Default to 1b
-       help="27b is the most intelligent but uses the most RAM and CPU power."
+    #Initialize the Converter
+    converter = DocumentConverter(
+        format_options={
+            "pdf": PdfFormatOption(pipeline_options=pipeline_options)
+        }
     )
 
-    #Retrieval K-Value Slider
-    k_val = st.slider(
-       "Documents to Analyze (K)",
-       min_value=1, max_value=20, value=7,
-       help="How many chunks of the archive should the AI read before answering?"
+    #Convert PDF to structured Markdown
+
+    result = converter.convert(file_path)
+    markdown_output = result.document.export_to_markdown()
+
+    #Convert to LangChain format for ChromaDB
+
+    docs = [Document(page_content=markdown_output, metadata={"source": file_path})]
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=100,
+        separators=[
+             "\n# ",   # Big Chapters
+             "\n## ",  # Sections
+             "\n### ", # Sub-sections
+             "\n\n",   # Paragraphs
+             "\n",     # Lines
+             " "       # Words
+        ]
     )
-    #Context Size Slider
-    ctx_val = st.slider("AI Memory Limit (Context)", 2048, 32768, 8192, step=2048)
+    return splitter.split_documents(docs)
 
-    st.divider()
+def main():
+    start_total = time.time()
 
-    avg_tokens_per_chunk = 500
-    required_ctx = k_val * avg_tokens_per_chunk
+    # --- STAGE 1: INITIALIZATION ---
 
-    if ctx_val < required_ctx:
-        st.warning(f"Your limit ({ctx_val}) is < than data size ({required_ctx} tokens). AI might 'forget' the oldest chunks!")
-    else:
-        st.success(f"✅ **Memory Optimized:** Your context window is large enough for all {k_val} chunks.")
-
-    if st.button("Clear App Cache"):
-       st.cache_resource.clear()
-       st.success("Cache cleared!")
-
-# 3. Backend Logic (Cached to avoid reloading the 12B model constantly)
-@st.cache_resource
-
-def initialize_rag(model_name, k, ctx):
+    print("Initializing Vector Store & Enbeddings")
+    init_start = time.time()
     embeddings = OllamaEmbeddings(model="nomic-embed-text")
-    vectorstore = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": k})
-    llm = ChatOllama(
-        model=model_name,
-        num_ctx=ctx,
-        temperature=0
-    )
+    vectorstore = Chroma(persist_directory=CHROMA_PATH, embedding_function=embeddings)
+    print(f"    Initialization took: {time.time() - initstart:.2f}s")
 
-    # Simplified RAG template
-    template = """
-    Answer the question below using only this information:
-    {context}
+    # --- STAGE 2: SCANNING ---
 
-    Question: {question}
-    Answer:"""
-    prompt = ChatPromptTemplate.from_template(template)
+    existing_items = vectorstore.get(include=[])
+    existing_ids = set(existing_items["ids"])
+    pdf_files = [os.path.join(DATA_PATH, f) for f in os.listdir(DATA_PATH) if f.endswith(".pdf")]
 
-    # This chain handles retrieval and generation
-    chain = (
-        {"context": retriever, "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
-    return chain
+    if not pdf_files:
+        print("No PDFs found")
+        return
 
-# 4. The User Interface
-rag_chain = initialize_rag(selected_model, k_val, ctx_val)
+    all_new_chunks = []
 
-st.title("🪖 VVA Veteran Archive Explorer")
-st.write("Currently powered by **{selected_model}** reading **{k_val} chunks** per query.")
+    # --- STAGE 3: DOCLING PROCESSING ---
 
-query = st.text_input("Enter your research question:", placeholder="e.g., What was discussed regarding homeless veterans?")
+    print(f"\n📂 Found {len(pdf_files)} PDFs. Starting Docling analysis...")
 
-if query:
-    with st.spinner("Analyzing archives..."):
-        # Wrap the execution in the callback to capture 'Stats'
-        with get_openai_callback() as cb:
-            response = rag_chain.invoke(query)
+    for file_path in pdf_files:
+        file_start = time.time()
+        print(f" Processing: {file_path}")
 
-            # Update the sidebar stats
-            with stats_placeholder.container():
-                st.write(f"**Total Tokens:** {cb.total_tokens}")
-                st.write(f"**Prompt Tokens:** {cb.prompt_tokens}")
-                st.write(f"**Completion Tokens:** {cb.completion_tokens}")
-                st.info("Note: Ollama provides token counts via the OpenAI callback compatibility layer.")
+        # This is where the 4-column layout is reconstructed
+        file_chunks = process_with_docling(file_path)
 
-        # Display the result in a clean card
-        st.markdown("### 🤖 AI Analysis")
-        st.markdown(f'<div class="stats-card">{response}</div>', unsafe_allow_html=True)
+        new_in_file = 0
+        for i, chunk in enumerate(file_chunks):
+            chunk_id = f"{file_path}:docling:{i}"
+            if chunk_id not in existing_ids:
+                chunk.metadata["id"] = chunk_id
+                all_new_chunks.append(chunk)
+                new_in_file += 1
 
-        # Optional: Button to clear cache if you update the PDF
-        if st.button("Clear Cache"):
-            st.cache_resource.clear()
+        file_elapsed = time.time() - file_start
+        print(f"   ∟ Done. Created {new_in_file} chunks in {file_elapsed:.2f}s")
+
+
+    # --- STAGE 4: CHROMA DB PUSH ---
+    if all_new_chunks:
+        print(f"\n Pushing {len(all_new_chunks)} chunks to ChromaDB (Batching by 100)...")
+        push_start = time.time()
+
+        new_chunk_ids = [chunk.metadata["id"] for chunk in all_new_chunks]
+        for i in range(0, len(all_new_chunks), 100):
+            batch = all_new_chunks[i:i+100]
+            batch_ids = new_chunk_ids[i:i+100]
+            vectorstore.add_documents(batch, ids=batch_ids)
+            print(f"   ∟ Processed {i + len(batch)} / {len(all_new_chunks)}...")
+
+        push_elapsed = time.time() - push_start
+        print(f"⏱️  ChromaDB Update took: {push_elapsed:.2f}s")
+    else:
+        print("\n✅ No new content to add.")
+
+    total_elapsed = time.time() - start_total
+    print(f"\nFINISHED. Total Process Time: {total_elapsed / 60:.2f} minutes")
+
+if __name__ == "__main__":
+    main()
