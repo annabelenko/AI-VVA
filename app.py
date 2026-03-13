@@ -1,48 +1,60 @@
 import os
-from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
+import time
+import logging
+
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings
+from langchain_core.documents import Document
 
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 
 DATA_PATH = "./data"
-CHROMA_PATH = "./chroma_db"
+CHROMA_PATH = "./chroma_db_arctic"
 
 pipeline_options = PdfPipelineOptions()
 pipeline_options.do_table_structure = True
 pipeline_options.do_ocr = True
 
+# Initialize the Converter
+converter = DocumentConverter(
+    format_options={
+        "pdf": PdfFormatOption(pipeline_options=pipeline_options)
+    }
+)
+
 def process_with_docling(file_path):
+    print(f"    Analyzing layout...")
 
-    #Initialize the Converter
-    converter = DocumentConverter(
-        format_options={
-            "pdf": PdfFormatOption(pipeline_options=pipeline_options)
-        }
-    )
+    # Initialize converter inside or ensure it's global
+    # If converter isn't defined globally, uncomment the next line:
+    # converter = DocumentConverter()
 
-    #Convert PDF to structured Markdown
-
+    # 1. Convert PDF to structured Markdown
     result = converter.convert(file_path)
     markdown_output = result.document.export_to_markdown()
 
-    #Convert to LangChain format for ChromaDB
-
+    # 2. Convert to LangChain format
     docs = [Document(page_content=markdown_output, metadata={"source": file_path})]
+
+    # 3. Tightened Splitter for Snowflake Arctic (Limit: 512 Tokens)
+    # We use chunk_size=400 characters to stay safely under the token limit
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=100,
+        chunk_size=400,
+        chunk_overlap=50,
         separators=[
              "\n# ",   # Big Chapters
              "\n## ",  # Sections
              "\n### ", # Sub-sections
              "\n\n",   # Paragraphs
              "\n",     # Lines
+             ". ",     # Sentence ends (added for better splitting)
              " "       # Words
         ]
     )
+
+    # This splits the documents into safe, Arctic-friendly pieces
     return splitter.split_documents(docs)
 
 def main():
@@ -52,9 +64,9 @@ def main():
 
     print("Initializing Vector Store & Enbeddings")
     init_start = time.time()
-    embeddings = OllamaEmbeddings(model="nomic-embed-text")
+    embeddings = OllamaEmbeddings(model="snowflake-arctic-embed")
     vectorstore = Chroma(persist_directory=CHROMA_PATH, embedding_function=embeddings)
-    print(f"    Initialization took: {time.time() - initstart:.2f}s")
+    print(f"    Initialization took: {time.time() - init_start:.2f}s")
 
     # --- STAGE 2: SCANNING ---
 
@@ -81,15 +93,15 @@ def main():
 
         new_in_file = 0
         for i, chunk in enumerate(file_chunks):
-            chunk_id = f"{file_path}:docling:{i}"
+            chunk_id = f"{file_path}:arctic:{i}"
             if chunk_id not in existing_ids:
+                chunk.page_content = f"passage: {chunk.page_content}"
                 chunk.metadata["id"] = chunk_id
                 all_new_chunks.append(chunk)
                 new_in_file += 1
 
         file_elapsed = time.time() - file_start
         print(f"   ∟ Done. Created {new_in_file} chunks in {file_elapsed:.2f}s")
-
 
     # --- STAGE 4: CHROMA DB PUSH ---
     if all_new_chunks:
