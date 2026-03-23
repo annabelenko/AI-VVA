@@ -1,67 +1,142 @@
 import os
-from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
+import time
+import logging
+
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings
+from langchain_core.documents import Document
+
+from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.datamodel.pipeline_options import PdfPipelineOptions
 
 DATA_PATH = "./data"
-CHROMA_PATH = "./chroma_db"
+CHROMA_PATH = "./chroma_db_nomic_prefixed"
+
+pipeline_options = PdfPipelineOptions()
+pipeline_options.do_table_structure = True
+pipeline_options.do_ocr = True
+
+# Initialize the Converter
+converter = DocumentConverter(
+    format_options={
+        "pdf": PdfFormatOption(pipeline_options=pipeline_options)
+    }
+)
+
+def process_with_docling(file_path):
+    print(f"    Analyzing layout...")
+
+    # Initialize converter inside or ensure it's global
+    # If converter isn't defined globally, uncomment the next line:
+    # converter = DocumentConverter()
+
+    # 1. Convert PDF to structured Markdown
+    result = converter.convert(file_path)
+    markdown_output = result.document.export_to_markdown()
+
+    # 2. Convert to LangChain format
+    docs = [Document(page_content=markdown_output, metadata={"source": file_path})]
+
+    # 3. Tightened Splitter for Snowflake Arctic (Limit: 512 Tokens)
+    # We use chunk_size=400 characters to stay safely under the token limit
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=100,
+        separators=[
+             "\n# ",   # Big Chapters
+             "\n## ",  # Sections
+             "\n### ", # Sub-sections
+             "\n\n",   # Paragraphs
+             "\n",     # Lines
+             ". ",     # Sentence ends (added for better splitting)
+             " "       # Words
+        ]
+    )
+
+    # This splits the documents into safe, Arctic-friendly pieces
+    return splitter.split_documents(docs)
 
 def main():
-    # 1. Load PDFs
-    print(f"--- Scanning {DATA_PATH} ---")
-    loader = DirectoryLoader(DATA_PATH, glob="*.pdf", loader_cls=PyPDFLoader)
-    documents = loader.load()
-    
-    if not documents:
-        print("No PDFs found!")
-        return
+    start_total = time.time()
 
-    # 2. Chunking
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    chunks = text_splitter.split_documents(documents)
-    
-    # 3. Create Unique IDs (The "Fingerprint")
-    # This creates an ID like "data/12-1999.pdf:page:5:chunk:2"
-    chunks_with_ids = []
-    last_page_id = None
-    current_chunk_index = 0
+    # --- STAGE 1: INITIALIZATION ---
 
-    for chunk in chunks:
-        source = chunk.metadata.get("source")
-        page = chunk.metadata.get("page")
-        current_page_id = f"{source}:{page}"
-
-        if current_page_id == last_page_id:
-            current_chunk_index += 1
-        else:
-            current_chunk_index = 0
-
-        chunk_id = f"{current_page_id}:{current_chunk_index}"
-        last_page_id = current_page_id
-        
-        # Add the ID to the metadata so we can track it
-        chunk.metadata["id"] = chunk_id
-        chunks_with_ids.append(chunk)
-
-    # 4. Initialize Vector Store
+    print("Initializing Vector Store & Prefixed Nomic Embeddings")
+    init_start = time.time()
     embeddings = OllamaEmbeddings(model="nomic-embed-text")
     vectorstore = Chroma(persist_directory=CHROMA_PATH, embedding_function=embeddings)
+    print(f"    Initialization took: {time.time() - init_start:.2f}s")
 
-    # 5. Filter out existing chunks
-    existing_items = vectorstore.get(include=[]) # Get all existing IDs
+    # --- STAGE 2: SCANNING ---
+
+    existing_items = vectorstore.get(include=[])
     existing_ids = set(existing_items["ids"])
-    print(f"Number of existing items in DB: {len(existing_ids)}")
+    pdf_files = [os.path.join(DATA_PATH, f) for f in os.listdir(DATA_PATH) if f.endswith(".pdf")]
 
-    new_chunks = [chunk for chunk in chunks_with_ids if chunk.metadata["id"] not in existing_ids]
+    if not pdf_files:
+        print("No PDFs found")
+        return
 
-    if len(new_chunks):
-        print(f"👉 Adding {len(new_chunks)} new chunks to the database...")
-        new_chunk_ids = [chunk.metadata["id"] for chunk in new_chunks]
-        vectorstore.add_documents(new_chunks, ids=new_chunk_ids)
-        print("✅ Success! New documents integrated.")
+    all_new_chunks = []
+
+    # --- STAGE 3: DOCLING PROCESSING ---
+
+    print(f"\n📂 Found {len(pdf_files)} PDFs. Starting Docling analysis...")
+
+    for file_path in pdf_files:
+        file_start = time.time()
+        print(f" Processing: {file_path}")
+
+        # This is where the 4-column layout is reconstructed
+        file_chunks = process_with_docling(file_path)
+
+        new_in_file = 0
+        for i, chunk in enumerate(file_chunks):
+            chunk_id = f"{file_path}:nomic-pref:{i}"
+            if chunk_id not in existing_ids:
+                chunk.page_content = f"search_document: {chunk.page_content}"
+                chunk.metadata["id"] = chunk_id
+                all_new_chunks.append(chunk)
+                new_in_file += 1
+
+        file_elapsed = time.time() - file_start
+        print(f"   ∟ Done. Created {new_in_file} chunks in {file_elapsed:.2f}s")
+
+    # --- STAGE 4: CHROMA DB PUSH ---
+    if all_new_chunks:
+        print(f"\n Pushing {len(all_new_chunks)} chunks to ChromaDB (Batching by 100)...")
+        push_start = time.time()
+
+        new_chunk_ids = [chunk.metadata["id"] for chunk in all_new_chunks]
+        for i in range(0, len(all_new_chunks), 250):
+            batch = all_new_chunks[i:i+250]
+            batch_ids = new_chunk_ids[i:i+250]
+            vectorstore.add_documents(batch, ids=batch_ids)
+            print(f"   ∟ Processed {i + len(batch)} / {len(all_new_chunks)}...")
+
+        push_elapsed = time.time() - push_start
+        print(f"⏱️  ChromaDB Update took: {push_elapsed:.2f}s")
     else:
-        print("✅ No new documents to add. Database is already up to date.")
+        print("\n✅ No new content to add.")
+
+    total_elapsed = time.time() - start_total
+    print(f"\nFINISHED. Total Process Time: {total_elapsed / 60:.2f} minutes")
+
+    # --- FINAL SUMMARY TABLE ---
+    print("\n" + "="*45)
+    print(f"{'VVA ARCHIVE INGESTION SUMMARY':^45}")
+    print("="*45)
+    print(f" PDFs Scanned:          {len(pdf_files)}")
+    print(f" New Files Processed:   {total_files_processed}")
+    print(f" New Chunks Added:      {len(all_new_chunks)}")
+    print(f" Existing DB Size:      {len(existing_ids)}")
+    print(f" Final DB Size:         {len(existing_ids) + len(all_new_chunks)}")
+    print("-" * 45)
+    print(f" Docling Analysis:      {(total_elapsed - push_elapsed) / 60:.2f} min")
+    print(f" Embedding Push:        {push_elapsed / 60:.2f} min")
+    print(f" Total Clock Time:      {total_elapsed / 60:.2f} min")
+    print("="*45 + "\n")
 
 if __name__ == "__main__":
     main()
