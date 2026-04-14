@@ -62,8 +62,8 @@ with st.sidebar:
 @st.cache_resource
 
 def initialize_rag(model_name, k, ctx):
-    embeddings = OllamaEmbeddings(model="nomic-embed-text")
-    vectorstore = Chroma(persist_directory="./chroma_db_nomic_prefixed", embedding_function=embeddings)
+    embeddings = OllamaEmbeddings(model="snowflake-arctic-embed")
+    vectorstore = Chroma(persist_directory="./chroma_db_arctic", embedding_function=embeddings)
     retriever = vectorstore.as_retriever(search_kwargs={"k": k})
     llm = ChatOllama(
         model=model_name,
@@ -100,11 +100,9 @@ query = st.text_input("Enter your research question:", placeholder="e.g., What w
 if query:
     with st.spinner("Analyzing archives..."):
 
-        prefixed_query = f"search_query: {query}"
-
         # Wrap the execution in the callback to capture 'Stats'
         with get_openai_callback() as cb:
-            response = rag_chain.invoke(prefixed_query)
+            response = rag_chain.invoke(query)
 
             # Update the sidebar stats
             with stats_placeholder.container():
@@ -115,7 +113,7 @@ if query:
 
         # Display the result in a clean card
         st.markdown("### 🤖 AI Analysis")
-        clean_response = response.replace("search_document: ", "").replace("passage: ", "")
+        clean_response = response
         st.markdown(f'<div class="stats-card">{response}</div>', unsafe_allow_html=True)
 
         # Optional: Button to clear cache if you update the PDF

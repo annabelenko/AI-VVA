@@ -1,17 +1,15 @@
 import os
 import time
 import logging
-
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings
 from langchain_core.documents import Document
-
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 
 DATA_PATH = "./data"
-CHROMA_PATH = "./chroma_db_nomic_prefixed"
+CHROMA_PATH = "./chroma_db_arctic"
 
 pipeline_options = PdfPipelineOptions()
 pipeline_options.do_table_structure = True
@@ -41,8 +39,8 @@ def process_with_docling(file_path):
     # 3. Tightened Splitter for Snowflake Arctic (Limit: 512 Tokens)
     # We use chunk_size=400 characters to stay safely under the token limit
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=100,
+        chunk_size=400,
+        chunk_overlap=50,
         separators=[
              "\n# ",   # Big Chapters
              "\n## ",  # Sections
@@ -62,9 +60,9 @@ def main():
 
     # --- STAGE 1: INITIALIZATION ---
 
-    print("Initializing Vector Store & Prefixed Nomic Embeddings")
+    print("Initializing Vector Store & Snowflake Arctic Embeddings")
     init_start = time.time()
-    embeddings = OllamaEmbeddings(model="nomic-embed-text")
+    embeddings = OllamaEmbeddings(model="snowflake-arctic-embed")
     vectorstore = Chroma(persist_directory=CHROMA_PATH, embedding_function=embeddings)
     print(f"    Initialization took: {time.time() - init_start:.2f}s")
 
@@ -93,9 +91,8 @@ def main():
 
         new_in_file = 0
         for i, chunk in enumerate(file_chunks):
-            chunk_id = f"{file_path}:nomic-pref:{i}"
+            chunk_id = f"{file_path}:arctic:{i}"
             if chunk_id not in existing_ids:
-                chunk.page_content = f"search_document: {chunk.page_content}"
                 chunk.metadata["id"] = chunk_id
                 all_new_chunks.append(chunk)
                 new_in_file += 1

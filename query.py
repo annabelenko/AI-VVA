@@ -6,8 +6,8 @@ from langchain_core.output_parsers import StrOutputParser
 
 # 1. Connect to the 5.1MB database you just built
 vectorstore = Chroma(
-    persist_directory="./chroma_db",
-    embedding_function=OllamaEmbeddings(model="nomic-embed-text")
+    persist_directory="./chroma_db_arctic",
+    embedding_function=OllamaEmbeddings(model="snowflake-arctic-embed")
 )
 
 # 2. Setup the "Retriever" (This pulls the top 5 most relevant chunks)
