@@ -77,6 +77,8 @@ def main():
         return
 
     all_new_chunks = []
+    total_files_processed = 0
+    push_elapsed = 0
 
     # --- STAGE 3: DOCLING PROCESSING ---
 
@@ -96,6 +98,9 @@ def main():
                 chunk.metadata["id"] = chunk_id
                 all_new_chunks.append(chunk)
                 new_in_file += 1
+
+        if new_in_file > 0:
+            total_files_processed += 1
 
         file_elapsed = time.time() - file_start
         print(f"   ∟ Done. Created {new_in_file} chunks in {file_elapsed:.2f}s")
